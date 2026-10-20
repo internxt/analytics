@@ -1,7 +1,12 @@
 import type { PriceWithTax } from '../types';
+import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureAnalytics } from '../config';
-import { savePaymentDataInLocalStorage } from '../services/impact.service';
+import {
+  handleImpactDTCCheckout,
+  savePaymentDataInLocalStorage,
+  trackSignUp,
+} from '../services/impact.service';
 import localStorageService from '../storage/storage';
 import { getProductAmount } from '../utils/price';
 import { bytesToString } from '../utils/size';
@@ -253,6 +258,164 @@ describe('Testing Impact Service', () => {
       expect(removeFromLocalStorageSpy).toHaveBeenCalledWith('impact_source');
     });
   });
+
+  describe('trackSignUp', () => {
+    describe('gtag tracking', () => {
+      it('When trackSignUp is called, then it sends a User Signup event to gtag', async () => {
+        const gTagSpy = vi.spyOn(globalThis.window, 'gtag');
+
+        await trackSignUp(mockedUserUuid);
+
+        expect(gTagSpy).toHaveBeenCalledWith('event', 'User Signup');
+      });
+
+      it('When gtag throws an error, then it reports the error and continues execution', async () => {
+        const unknownError = new Error('gtag Error');
+        const gTagSpy = vi.spyOn(globalThis.window, 'gtag').mockImplementation(() => {
+          throw unknownError;
+        });
+
+        await expect(trackSignUp(mockedUserUuid)).resolves.not.toThrow();
+
+        expect(gTagSpy).toHaveBeenCalledWith('event', 'User Signup');
+        expect(onErrorMock).toHaveBeenCalledWith(unknownError);
+      });
+    });
+
+    describe('Impact API tracking', () => {
+      it('When trackSignUp is called, then it sends a signup event to the Impact API with the correct payload', async () => {
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackSignUp(mockedUserUuid);
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        expect(axiosSpy).toHaveBeenCalledWith(
+          mockImpactApiUrl,
+          expect.objectContaining({
+            anonymousId: 'anon_id',
+            timestamp: expect.any(String),
+            userId: mockedUserUuid,
+            type: 'track',
+            event: 'User Signup',
+          }),
+        );
+      });
+
+      it('When trackSignUp is called, then it includes the message ID in the Impact API payload', async () => {
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackSignUp(mockedUserUuid);
+
+        const callArgs = axiosSpy.mock.calls[0][1] as { messageId: string };
+        expect(callArgs).toHaveProperty('messageId');
+        expect(callArgs.messageId).toBe(mockedUserUuid);
+      });
+
+      it('When the source is direct, then it does not send to the Impact API', async () => {
+        const getCookieMock = await import('../utils/cookies');
+        vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+          if (key === 'impactSource') return 'direct';
+          if (key === 'impactAnonymousId') return 'anon_id';
+          return '';
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackSignUp(mockedUserUuid);
+
+        expect(axiosSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('handleImpactDTCCheckout', () => {
+  const irclickid = 'TZr0kB1hUxyZWqOxHoVulWsMUkuRX82pgw77Sk0';
+  const utmMedium = '312695';
+
+  it('When tracking an affiliate click, then it reports the event to Impact analytics with the click identifier', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid });
+
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+    expect(axiosSpy).toHaveBeenCalledWith(
+      mockImpactApiUrl,
+      expect.objectContaining({
+        anonymousId: 'anon_id',
+        type: 'page',
+        timestamp: expect.any(String),
+        properties: expect.objectContaining({ irclickid }),
+      }),
+    );
+  });
+
+  it('When the user has not been tracked before, then it creates a unique identifier for them', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactAnonymousId') return '';
+      return '';
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid });
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { anonymousId: string };
+    expect(callArgs.anonymousId).toBe(mockedUserUuid);
+  });
+
+  it('When an affiliate partner is identified, then it includes their information in the tracking event', async () => {
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid, utmMedium });
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { properties: Record<string, unknown> };
+    expect(callArgs.properties).toHaveProperty('partner_id', utmMedium);
+  });
+
+  it('When no affiliate partner is identified, then the tracking event omits partner information', async () => {
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid });
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { properties: Record<string, unknown> };
+    expect(callArgs.properties).not.toHaveProperty('partner_id');
+  });
+
+  it('When tracking is initialized, then it persists tracking identifiers for future affiliate attribution', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    const setImpactCookiesSpy = vi.mocked(getCookieMock.setImpactCookies);
+    vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid, utmMedium });
+
+    expect(setImpactCookiesSpy).toHaveBeenCalledWith('anon_id', irclickid, utmMedium);
+  });
+
+  it('When the tracking service is unavailable, then it handles the failure gracefully and continues', async () => {
+    const unknownError = new Error('API Error');
+    vi.spyOn(axios, 'post').mockRejectedValue(unknownError);
+
+    await expect(handleImpactDTCCheckout({ irclickid })).resolves.not.toThrow();
+
+    expect(onErrorMock).toHaveBeenCalledWith(unknownError);
+  });
+});
+
+describe('uuid library', () => {
+  it('When calling v4, then it generates a valid UUID', async () => {
+    const { v4 } = await vi.importActual<typeof import('uuid')>('uuid');
+    const id = v4();
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
 });
 
 describe('savePaymentDataInLocalStorage - edge cases', () => {
@@ -355,5 +518,85 @@ describe('savePaymentDataInLocalStorage - edge cases', () => {
     });
 
     expect(setToLocalStorageSpy).toHaveBeenCalledWith('isFirstPurchase', 'false');
+  });
+});
+
+describe('trackSignUp - additional coverage', () => {
+  it('When the traffic source is unknown, then no signup event is reported', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactSource') return '';
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackSignUp(mockedUserUuid);
+
+    expect(axiosSpy).not.toHaveBeenCalled();
+  });
+
+  it('When the user arrived via a Google ad, then their ad click identifier is included in the signup event', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'gclid') return 'test_gclid_123';
+      if (key === 'impactSource') return 'ads';
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackSignUp(mockedUserUuid);
+
+    const callArgs = axiosSpy.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs).toHaveProperty('gclid', 'test_gclid_123');
+  });
+
+  it('When the user did not arrive via a Google ad, then no ad click identifier is included in the signup event', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'gclid') return '';
+      if (key === 'impactSource') return 'ads';
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackSignUp(mockedUserUuid);
+
+    const callArgs = axiosSpy.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs).not.toHaveProperty('gclid');
+  });
+
+  it('When Google Analytics is not available, then the signup event is still reported to Impact', async () => {
+    globalThis.window.gtag = undefined as any;
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackSignUp(mockedUserUuid);
+
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleImpactDTCCheckout - additional coverage', () => {
+  const irclickid = 'TZr0kB1hUxyZWqOxHoVulWsMUkuRX82pgw77Sk0';
+
+  it('When an affiliate click is tracked, then the browser and page information is included in the event', async () => {
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid });
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { context: Record<string, unknown> };
+    expect(callArgs.context).toHaveProperty('userAgent');
+    expect(callArgs.context).toHaveProperty('page');
+  });
+
+  it('When no affiliate partner is identified, then no partner information is included in the event', async () => {
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await handleImpactDTCCheckout({ irclickid, utmMedium: null });
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { properties: Record<string, unknown> };
+    expect(callArgs.properties).not.toHaveProperty('partner_id');
   });
 });

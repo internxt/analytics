@@ -1,7 +1,11 @@
+import axios from 'axios';
+import { v4 as uuidV4 } from 'uuid';
+import dayjs from 'dayjs';
+import { getAnalyticsConfig, reportError } from '../config';
 import { AnalyticsStorageKey } from '../storage/keys';
 import localStorageService from '../storage/storage';
 import type { CouponCodeData, PriceWithTax } from '../types';
-import { getCookie } from '../utils/cookies';
+import { getCookie, setImpactCookies } from '../utils/cookies';
 import { getProductAmount } from '../utils/price';
 import { bytesToString } from '../utils/size';
 
@@ -70,5 +74,67 @@ export function savePaymentDataInLocalStorage({
     localStorageService.set(AnalyticsStorageKey.ImpactSource, impactSource);
   } else {
     localStorageService.removeItem(AnalyticsStorageKey.ImpactSource);
+  }
+}
+
+export async function handleImpactDTCCheckout({
+  irclickid,
+  utmMedium,
+}: {
+  irclickid: string;
+  utmMedium?: string | null;
+}): Promise<void> {
+  try {
+    const IMPACT_API = getAnalyticsConfig().impactApiUrl;
+    const existingAnonymousId = getCookie('impactAnonymousId');
+    const anonymousId = existingAnonymousId || uuidV4();
+
+    setImpactCookies(anonymousId, irclickid, utmMedium);
+
+    await axios.post(IMPACT_API, {
+      anonymousId,
+      timestamp: dayjs().format('YYYY-MM-DDTHH:mm:ss.sssZ'),
+      context: {
+        userAgent: navigator.userAgent,
+        page: {
+          url: globalThis.location.href,
+          referrer: document.referrer,
+        },
+      },
+      type: 'page',
+      properties: {
+        irclickid,
+        ...(utmMedium && { partner_id: utmMedium }),
+      },
+    });
+  } catch (error) {
+    reportError(error);
+  }
+}
+
+export async function trackSignUp(uuid: string): Promise<void> {
+  try {
+    const gclid = getCookie('gclid');
+    const IMPACT_API = getAnalyticsConfig().impactApiUrl;
+    const anonymousID = getCookie('impactAnonymousId');
+    const source = getCookie('impactSource');
+
+    if (globalThis.window.gtag) {
+      window.gtag('event', 'User Signup');
+    }
+
+    if (source && source !== 'direct') {
+      await axios.post(IMPACT_API, {
+        anonymousId: anonymousID,
+        timestamp: dayjs().format('YYYY-MM-DDTHH:mm:ss.sssZ'),
+        messageId: uuidV4(),
+        userId: uuid,
+        type: 'track',
+        event: 'User Signup',
+        ...(gclid && { gclid }),
+      });
+    }
+  } catch (error) {
+    reportError(error);
   }
 }
