@@ -21,7 +21,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "npm run build:tsc && npm run build:vite",
+    "build": "yarn build:tsc && yarn build:vite",
     "build:tsc": "tsc",
     "build:vite": "vite build",
     "test": "vitest run",
