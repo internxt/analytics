@@ -12,6 +12,7 @@ export {
   savePaymentDataInLocalStorage,
   handleImpactDTCCheckout,
   trackSignUp,
+  trackPaymentConversion,
 } from './services/impact.service';
 export type { SavePaymentDataParams } from './services/impact.service';
 export { sendAddShoppersConversion } from './services/addShoppers.services';
