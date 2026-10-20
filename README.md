@@ -5,7 +5,7 @@ Shared analytics library for Internxt web apps. It wraps the tracking we send to
 ## Installation
 
 ```bash
-yarn add @internxt/analytics
+npm install @internxt/analytics
 ```
 
 ## Setup
@@ -55,16 +55,16 @@ The library relies on the browser globals loaded by the app (`window.gtag`, `win
 ## Development
 
 ```bash
-yarn install
-yarn build       # type declarations (tsc) + bundle (vite)
-yarn test        # vitest
-yarn test:watch
+npm install
+npm run build   # type declarations (tsc) + bundle (vite)
+npm test        # vitest
+npm run test:watch
 ```
 
-To try a change in an app before publishing, run `yarn build && npm pack` and install the generated `.tgz` in the app.
+To try a change in an app before publishing, run `npm run build && npm pack` and install the generated `.tgz` in the app.
 
 ## Publishing
 
 1. Bump `version` in `package.json` in your PR.
 2. After merging to `master`, create a GitHub release for that version.
-3. The `publish-npm` and `publish-github` workflows build, test and publish the package to npm and to the GitHub package registry.
+3. The `publish-npm` workflow builds and publishes the package to npm.
