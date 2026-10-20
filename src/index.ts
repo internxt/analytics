@@ -5,5 +5,6 @@ export type { CouponCodeData, PlanPrice, PriceWithTax, PurchaseBuyer } from './t
 export { AnalyticsStorageKey, PURCHASE_STORAGE_KEYS } from './storage/keys';
 export { clearPaymentStorage } from './storage/storage';
 
+export { default as gaService } from './services/ga.service';
 export { default as metaService, trackLead, trackCheckoutStart } from './services/meta.service';
 export { sendAddShoppersConversion } from './services/addShoppers.services';
