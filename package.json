@@ -1,0 +1,42 @@
+{
+  "name": "@internxt/analytics",
+  "version": "0.0.1",
+  "description": "Library of Internxt analytics",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/internxt/analytics"
+  },
+  "author": "Internxt",
+  "license": "MIT",
+  "type": "module",
+  "module": "./dist/internxt-analytics.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/internxt-analytics.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npm run build:tsc && npm run build:vite",
+    "build:tsc": "tsc",
+    "build:vite": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "dayjs": "^1.11.7",
+    "prettysize": "^2.0.0",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^4.1.11"
+  }
+}
