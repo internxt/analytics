@@ -1,7 +1,7 @@
 import { getAnalyticsConfig } from '../config';
 import { AnalyticsStorageKey } from '../storage/keys';
 import localStorageService from '../storage/storage';
-import type { CouponCodeData } from '../types';
+import type { CouponCodeData, PurchaseBuyer } from '../types';
 import { formatPrice, getProductAmount } from '../utils/price';
 import { bytesToString } from '../utils/size';
 
@@ -135,9 +135,104 @@ function trackBeginCheckout(params: TrackBeginCheckoutParams): void {
   }
 }
 
+function trackPurchase({ id: buyerId, email }: PurchaseBuyer): void {
+  try {
+    const checkoutItemDataStr = localStorageService.get(AnalyticsStorageKey.CheckoutItemData);
+    if (!checkoutItemDataStr) {
+      console.warn('[GA Service] No checkout data found, purchase may have already been tracked');
+      return;
+    }
+
+    const subscriptionId = localStorageService.get(AnalyticsStorageKey.SubscriptionID);
+    const paymentIntentId = localStorageService.get(AnalyticsStorageKey.PaymentIntentID);
+    const priceId = localStorageService.get(AnalyticsStorageKey.PriceId);
+    const currency = localStorageService.get(AnalyticsStorageKey.Currency);
+    const amountPaidString = localStorageService.get(AnalyticsStorageKey.AmountPaid);
+    const amount = Number.parseFloat(amountPaidString ?? '0');
+
+    const itemOriginalPriceStr = localStorageService.get(AnalyticsStorageKey.ItemOriginalPrice);
+    const itemOriginalPrice = Number.parseFloat(itemOriginalPriceStr ?? '0');
+
+    const couponCode = localStorageService.get(AnalyticsStorageKey.CouponCode);
+
+    let checkoutItemData: CheckoutItemData | null = null;
+    try {
+      checkoutItemData = JSON.parse(checkoutItemDataStr) as CheckoutItemData;
+    } catch (parseError) {
+      console.error('[GA Service] Error parsing checkout_item_data:', parseError);
+    }
+
+    const transactionId = paymentIntentId || subscriptionId || `${buyerId}-${Date.now()}`;
+    const currencyCode = currency ?? 'EUR';
+
+    const itemName = checkoutItemData?.item_name || 'Unknown Plan';
+    const itemCategory = checkoutItemData?.item_category || 'Individual';
+    const itemVariant = checkoutItemData?.item_variant || 'month';
+    const itemDiscount = checkoutItemData?.discount || 0;
+
+    const finalPrice = itemOriginalPrice > 0 ? itemOriginalPrice : amount;
+
+    const item = {
+      item_id: priceId,
+      item_name: itemName,
+      item_category: itemCategory,
+      item_variant: itemVariant,
+      price: finalPrice,
+      quantity: 1,
+      item_brand: 'Internxt',
+      ...(couponCode && { coupon: couponCode }),
+      ...(itemDiscount > 0 && { discount: itemDiscount }),
+    };
+
+    if (!globalThis.window.gtag) {
+      console.warn('[GA Service] gtag not available');
+      return;
+    }
+
+    if (email) {
+      globalThis.window.gtag('set', 'user_data', {
+        email: email,
+      });
+    }
+
+    const purchaseEcommerce = {
+      transaction_id: transactionId,
+      currency: currencyCode,
+      value: amount,
+      items: [item],
+      coupon: couponCode ?? undefined,
+    };
+
+    globalThis.window.dataLayer.push({
+      event: 'purchase',
+      ecommerce: purchaseEcommerce,
+    });
+
+    const { gaId, gaConversionTag } = getAnalyticsConfig();
+    const sendTo = [gaId, gaConversionTag].filter(Boolean);
+
+    if (sendTo.length > 0) {
+      globalThis.window.gtag('event', 'purchase', {
+        send_to: sendTo,
+        transaction_id: transactionId,
+        value: amount,
+        currency: currencyCode,
+        items: [item],
+        coupon: couponCode ?? undefined,
+      });
+    }
+
+    localStorageService.removeItem(AnalyticsStorageKey.CheckoutItemData);
+    localStorageService.removeItem(AnalyticsStorageKey.ItemOriginalPrice);
+  } catch (error) {
+    console.error('[GA Service] Error in trackPurchase:', error);
+  }
+}
+
 const gaService = {
   track,
   trackBeginCheckout,
+  trackPurchase,
 };
 
 export default gaService;
