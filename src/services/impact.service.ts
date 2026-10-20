@@ -4,10 +4,11 @@ import dayjs from 'dayjs';
 import { getAnalyticsConfig, reportError } from '../config';
 import { AnalyticsStorageKey } from '../storage/keys';
 import localStorageService from '../storage/storage';
-import type { CouponCodeData, PriceWithTax } from '../types';
+import type { CouponCodeData, PriceWithTax, PurchaseBuyer } from '../types';
 import { getCookie, setImpactCookies } from '../utils/cookies';
 import { getProductAmount } from '../utils/price';
 import { bytesToString } from '../utils/size';
+import { sendAddShoppersConversion } from './addShoppers.services';
 
 /**
  * Stores relevant payment data in local storage to be retrieved later,
@@ -136,5 +137,74 @@ export async function trackSignUp(uuid: string): Promise<void> {
     }
   } catch (error) {
     reportError(error);
+  }
+}
+
+export async function trackPaymentConversion({ id: buyerId, email: buyerEmail }: PurchaseBuyer): Promise<void> {
+  try {
+    const subscription = localStorageService.get(AnalyticsStorageKey.SubscriptionID);
+    const paymentIntent = localStorageService.get(AnalyticsStorageKey.PaymentIntentID);
+    const currency = localStorageService.get(AnalyticsStorageKey.Currency);
+    const amountPaidStr = localStorageService.get(AnalyticsStorageKey.AmountPaid);
+    const amount = Number.parseFloat(amountPaidStr ?? '0');
+    const couponCode = localStorageService.get(AnalyticsStorageKey.CouponCode);
+    const isFirstPurchase = localStorageService.get(AnalyticsStorageKey.IsFirstPurchase) === 'true';
+
+    try {
+      sendAddShoppersConversion({
+        orderId: buyerId,
+        value: amount,
+        currency: currency ?? 'EUR',
+        couponCodeName: couponCode ?? undefined,
+        email: buyerEmail,
+      });
+    } catch (error) {
+      console.error('[Impact Service] AddShoppers conversion failed:', error);
+    }
+
+    const IMPACT_API = getAnalyticsConfig().impactApiUrl;
+    const anonymousID = getCookie('impactAnonymousId') || uuidV4();
+    const source = getCookie('impactSource') || localStorageService.get(AnalyticsStorageKey.ImpactSource);
+
+    const IMPACT_COUPON_WHITELIST = [
+      'CNINTERNXT',
+      'CNINTERNXTL',
+      'CLOUDOFF',
+      'SPECIAL',
+      'ANTIV',
+      'SAVE',
+      'OFFER',
+      'GOTZHAOFFER',
+      'TFA',
+      'REOFFER',
+      'WEWE',
+      'AMIOFFER',
+      'VIPOFFER',
+      'VAOFFER',
+      'VEOFFER',
+    ];
+    const isImpactCoupon = couponCode && IMPACT_COUPON_WHITELIST.includes(couponCode.toUpperCase());
+
+    if (isFirstPurchase && ((source && source !== 'direct') || isImpactCoupon)) {
+      try {
+        await axios.post(IMPACT_API, {
+          anonymousId: anonymousID,
+          timestamp: dayjs().format('YYYY-MM-DDTHH:mm:ss.sssZ'),
+          properties: {
+            impact_value: amount === 0 ? 0.01 : amount,
+            subscription_id: subscription,
+            payment_intent: paymentIntent,
+            ...(couponCode && { order_promo_code: couponCode }),
+          },
+          userId: buyerId,
+          type: 'track',
+          event: 'Payment Conversion',
+        });
+      } catch (error) {
+        reportError(error);
+      }
+    }
+  } catch (error) {
+    console.error('[Impact Service] Error in trackPaymentConversion:', error);
   }
 }

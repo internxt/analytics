@@ -12,6 +12,9 @@ export {
   savePaymentDataInLocalStorage,
   handleImpactDTCCheckout,
   trackSignUp,
+  trackPaymentConversion,
 } from './services/impact.service';
 export type { SavePaymentDataParams } from './services/impact.service';
+export { sendConversionToAPI } from './services/googleSheet.service';
 export { sendAddShoppersConversion } from './services/addShoppers.services';
+export { sendPurchaseEvents } from './services/purchase.service';

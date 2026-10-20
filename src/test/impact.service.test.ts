@@ -5,6 +5,7 @@ import { configureAnalytics } from '../config';
 import {
   handleImpactDTCCheckout,
   savePaymentDataInLocalStorage,
+  trackPaymentConversion,
   trackSignUp,
 } from '../services/impact.service';
 import localStorageService from '../storage/storage';
@@ -44,6 +45,7 @@ const paymentIntentId = 'py_123';
 const mockedUserUuid = '00000000-0000-0000-0000-0000000000';
 const mockImpactApiUrl = 'mock-impact-api-url';
 const customerId = 'cus_123';
+const buyer = { id: mockedUserUuid, email: 'usuario@ejemplo.com' };
 
 const promoCode = {
   amountOff: undefined,
@@ -326,6 +328,198 @@ describe('Testing Impact Service', () => {
       });
     });
   });
+
+  describe('trackPaymentConversion', () => {
+    describe('Impact API tracking', () => {
+      it('When trackPaymentConversion is called, then it sends the conversion to the Impact API with the correct data', async () => {
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        expect(axiosSpy).toHaveBeenCalledWith(
+          mockImpactApiUrl,
+          expect.objectContaining({
+            anonymousId: 'anon_id',
+            timestamp: expect.any(String),
+            properties: expect.objectContaining({
+              impact_value: parseFloat(expectedAmount),
+              subscription_id: subId,
+              payment_intent: paymentIntentId,
+              order_promo_code: promoCode.codeName,
+            }),
+            userId: mockedUserUuid,
+            type: 'track',
+            event: 'Payment Conversion',
+          }),
+        );
+      });
+
+      it('When the amount paid is 0, then it uses 0.01 as the minimum impact value', async () => {
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'amountPaid') return '0';
+          if (key === 'subscriptionId') return subId;
+          if (key === 'couponCode') return promoCode.codeName;
+          if (key === 'isFirstPurchase') return 'true';
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        const callArgs = axiosSpy.mock.calls[0][1] as { messageId: string; properties: Record<string, unknown> };
+        expect(callArgs.properties.impact_value).toBe(0.01);
+      });
+
+      it('When a coupon code is available, then it includes it in the Impact API properties', async () => {
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        const callArgs = axiosSpy.mock.calls[0][1] as { messageId: string; properties: Record<string, unknown> };
+        expect(callArgs.properties).toHaveProperty('order_promo_code', promoCode.codeName);
+      });
+
+      it('When the Impact API call fails, then it reports the error', async () => {
+        const unknownError = new Error('API Error');
+        const axiosSpy = vi.spyOn(axios, 'post').mockRejectedValue(unknownError);
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        expect(onErrorMock).toHaveBeenCalledWith(unknownError);
+      });
+
+      it('When the source is direct and no coupon code is present, then it does not send to Impact', async () => {
+        const getCookieMock = await import('../utils/cookies');
+        vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+          if (key === 'impactSource') return 'direct';
+          return '';
+        });
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'couponCode') return null;
+          if (key === 'amountPaid') return expectedAmount;
+          if (key === 'isFirstPurchase') return 'true';
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).not.toHaveBeenCalled();
+      });
+
+      it('When the source is direct and the coupon code is not whitelisted, then it does not send to Impact', async () => {
+        const getCookieMock = await import('../utils/cookies');
+        vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+          if (key === 'impactSource') return 'direct';
+          return '';
+        });
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'couponCode') return 'NOT_WHITELISTED';
+          if (key === 'amountPaid') return expectedAmount;
+          if (key === 'isFirstPurchase') return 'true';
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).not.toHaveBeenCalled();
+      });
+
+      it('When the source is direct but the coupon code is whitelisted, then it sends to Impact', async () => {
+        const getCookieMock = await import('../utils/cookies');
+        vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+          if (key === 'impactSource') return 'direct';
+          if (key === 'impactAnonymousId') return ''; // Empty, so it uses uuidV4
+          return '';
+        });
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'couponCode') return 'CNINTERNXT'; // In whitelist
+          if (key === 'amountPaid') return expectedAmount;
+          if (key === 'subscriptionId') return subId;
+          if (key === 'isFirstPurchase') return 'true';
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        const callArgs = axiosSpy.mock.calls[0][1] as { properties: Record<string, unknown>; anonymousId: string };
+        expect(callArgs.properties).toHaveProperty('order_promo_code', 'CNINTERNXT');
+        expect(callArgs.anonymousId).toBe(mockedUserUuid); // Fallback to uuidV4
+      });
+
+      it('When the source cookie has expired but the purchase was made from Impact, then it still sends to Impact', async () => {
+        const getCookieMock = await import('../utils/cookies');
+        vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+          if (key === 'impactAnonymousId') return 'anon_id';
+          return '';
+        });
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'impact_source') return 'Impact';
+          if (key === 'couponCode') return null;
+          if (key === 'amountPaid') return expectedAmount;
+          if (key === 'isFirstPurchase') return 'true';
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        expect(axiosSpy.mock.calls[0][1]).toEqual(
+          expect.objectContaining({ anonymousId: 'anon_id', userId: mockedUserUuid, event: 'Payment Conversion' }),
+        );
+      });
+
+      it('When isFirstPurchase is false, then it does not send to Impact', async () => {
+        vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+          if (key === 'isFirstPurchase') return 'false';
+          if (key === 'amountPaid') return expectedAmount;
+          if (key === 'couponCode') return promoCode.codeName;
+          return null;
+        });
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion(buyer);
+
+        expect(axiosSpy).not.toHaveBeenCalled();
+      });
+
+      it('When the buyer has no account yet, then the conversion is sent with the Stripe customer', async () => {
+        const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+        await trackPaymentConversion({ id: customerId, email: 'new.buyer@internxt.com' });
+
+        expect(axiosSpy).toHaveBeenCalledTimes(1);
+        expect(axiosSpy.mock.calls[0][1]).toEqual(
+          expect.objectContaining({ anonymousId: 'anon_id', userId: customerId, event: 'Payment Conversion' }),
+        );
+      });
+    });
+
+    describe('Error handling', () => {
+      it('When gtag is not available, then it continues execution without throwing', async () => {
+        globalThis.window.gtag = undefined as any;
+
+        await expect(trackPaymentConversion(buyer)).resolves.not.toThrow();
+      });
+
+      it('When an unexpected error occurs, then it resolves without throwing', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.spyOn(localStorageService, 'get').mockImplementation(() => {
+          throw new Error('Storage Error');
+        });
+
+        await expect(trackPaymentConversion(buyer)).resolves.not.toThrow();
+
+        consoleErrorSpy.mockRestore();
+      });
+    });
+  });
 });
 
 describe('handleImpactDTCCheckout', () => {
@@ -575,6 +769,113 @@ describe('trackSignUp - additional coverage', () => {
     await trackSignUp(mockedUserUuid);
 
     expect(axiosSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('trackPaymentConversion - additional coverage', () => {
+  it('When the shopping affiliate tracker fails, then the error is handled gracefully and the Impact conversion is still reported', async () => {
+    const { sendAddShoppersConversion } = await import('../services/addShoppers.services');
+    vi.mocked(sendAddShoppersConversion).mockImplementation(() => {
+      throw new Error('AddShoppers Error');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await expect(trackPaymentConversion(buyer)).resolves.not.toThrow();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[Impact Service] AddShoppers conversion failed:', expect.any(Error));
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('When no discount code was used, then no promo code is included in the conversion event', async () => {
+    vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+      if (key === 'couponCode') return null;
+      if (key === 'amountPaid') return expectedAmount;
+      if (key === 'subscriptionId') return subId;
+      if (key === 'isFirstPurchase') return 'true';
+      if (key === 'currency') return product.price.currency;
+      return null;
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackPaymentConversion(buyer);
+
+    const callArgs = axiosSpy.mock.calls[0][1] as { properties: Record<string, unknown> };
+    expect(callArgs.properties).not.toHaveProperty('order_promo_code');
+  });
+
+  it('When a first-time customer arrives through a tracked channel, then the conversion is reported even without a discount code', async () => {
+    vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+      if (key === 'couponCode') return null;
+      if (key === 'amountPaid') return expectedAmount;
+      if (key === 'subscriptionId') return subId;
+      if (key === 'isFirstPurchase') return 'true';
+      if (key === 'currency') return product.price.currency;
+      return null;
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackPaymentConversion(buyer);
+
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('When a first-time customer uses the CLOUDOFF partner code on a direct visit, then the conversion is still attributed to the partner', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactSource') return 'direct';
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+      if (key === 'couponCode') return 'CLOUDOFF';
+      if (key === 'amountPaid') return expectedAmount;
+      if (key === 'subscriptionId') return subId;
+      if (key === 'isFirstPurchase') return 'true';
+      return null;
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackPaymentConversion(buyer);
+
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('When a first-time customer uses the SPECIAL partner code on a direct visit, then the conversion is still attributed to the partner', async () => {
+    const getCookieMock = await import('../utils/cookies');
+    vi.mocked(getCookieMock.getCookie).mockImplementation((key) => {
+      if (key === 'impactSource') return 'direct';
+      if (key === 'impactAnonymousId') return 'anon_id';
+      return '';
+    });
+    vi.spyOn(localStorageService, 'get').mockImplementation((key) => {
+      if (key === 'couponCode') return 'SPECIAL';
+      if (key === 'amountPaid') return expectedAmount;
+      if (key === 'subscriptionId') return subId;
+      if (key === 'isFirstPurchase') return 'true';
+      return null;
+    });
+    const axiosSpy = vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackPaymentConversion(buyer);
+
+    expect(axiosSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('When a conversion is tracked, then the shopping affiliate is notified with the customer and purchase details', async () => {
+    const { sendAddShoppersConversion } = await import('../services/addShoppers.services');
+    vi.spyOn(axios, 'post').mockResolvedValue({});
+
+    await trackPaymentConversion(buyer);
+
+    expect(sendAddShoppersConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: mockedUserUuid,
+        email: 'usuario@ejemplo.com',
+        currency: product.price.currency,
+      }),
+    );
   });
 });
 
