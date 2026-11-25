@@ -259,6 +259,38 @@ describe('Testing Impact Service', () => {
       expect(setToLocalStorageSpy).not.toHaveBeenCalledWith('impact_source', expect.anything());
       expect(removeFromLocalStorageSpy).toHaveBeenCalledWith('impact_source');
     });
+
+    it('When no discount code is provided, then it drops any coupon kept from an earlier attempt', () => {
+      const removeFromLocalStorageSpy = vi.spyOn(localStorageService, 'removeItem');
+
+      savePaymentDataInLocalStorage({
+        subscriptionId: subId,
+        paymentIntentId,
+        selectedPlan: product as PriceWithTax,
+        users: 1,
+        couponCodeData: undefined,
+        isFirstPurchase: true,
+        customerId,
+      });
+
+      expect(removeFromLocalStorageSpy).toHaveBeenCalledWith('couponCode');
+    });
+
+    it('When a discount code is provided, then it keeps the coupon instead of dropping it', () => {
+      const removeFromLocalStorageSpy = vi.spyOn(localStorageService, 'removeItem');
+
+      savePaymentDataInLocalStorage({
+        subscriptionId: subId,
+        paymentIntentId,
+        selectedPlan: product as PriceWithTax,
+        users: 1,
+        couponCodeData: promoCode,
+        isFirstPurchase: true,
+        customerId,
+      });
+
+      expect(removeFromLocalStorageSpy).not.toHaveBeenCalledWith('couponCode');
+    });
   });
 
   describe('trackSignUp', () => {
