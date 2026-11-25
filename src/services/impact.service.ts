@@ -65,6 +65,8 @@ export function savePaymentDataInLocalStorage({
 
   if (couponCodeData?.codeName) {
     localStorageService.set(AnalyticsStorageKey.CouponCode, couponCodeData.codeName);
+  } else {
+    localStorageService.removeItem(AnalyticsStorageKey.CouponCode);
   }
 
   localStorageService.set(AnalyticsStorageKey.IsFirstPurchase, String(isFirstPurchase));
